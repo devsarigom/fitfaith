@@ -1,0 +1,42 @@
+# Single-container build for Railway Free/Hobby (frontend + nginx + Node API)
+
+FROM node:26-alpine AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --ignore-scripts
+COPY api/coach/core/ /app/api/coach/core/
+COPY frontend/ ./
+ARG APP_BUILD=""
+RUN APP_BUILD="$APP_BUILD" npm run build
+
+FROM node:26-alpine
+RUN apk upgrade --no-cache \
+ && apk add --no-cache nginx gettext \
+ && adduser -D -H -s /sbin/nologin coach
+
+WORKDIR /app/api
+COPY api/package.json api/package-lock.json* ./
+RUN npm ci --omit=dev --omit=optional && npm cache clean --force
+
+COPY api/server.js api/push-messages.js api/nudge.js api/nudge-copy.js api/wrapped.js api/wrapped-copy.js api/checkin-reminder.js api/checkin-copy.js api/verify-error.js api/password.js api/rate-limit.js api/passkeys-store.js api/device-link.js api/watch-relay.js api/media.js api/queue.js api/sync-stamps.js api/durable.js api/admin-socket.js api/recover.js api/net-guard.js api/permissions.js api/consent.js api/share-log.js api/tokens.js api/oauth.js api/budgets.js api/role-claims.js api/origin.js ./
+COPY api/coach ./coach
+COPY api/library ./library
+COPY api/oidc ./oidc
+COPY api/integrations ./integrations
+COPY api/trainers ./trainers
+COPY api/sources ./sources
+
+COPY --from=frontend-build /app/frontend/dist /usr/share/nginx/html
+COPY catalogue/media/ /usr/share/nginx/html/exercise-media/
+COPY web/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY railway-start.sh /usr/local/bin/railway-start.sh
+RUN sed -i 's/\r$//' /usr/local/bin/railway-start.sh \
+ && chmod +x /usr/local/bin/railway-start.sh \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+ENV NODE_ENV=production
+ENV DATA_DIR=/data
+ENV TRUST_PROXY=1
+ENV CONTENT_SECURITY_POLICY="default-src 'self'; script-src 'self' 'sha256-G6hveK3W3qL6wotsg9mMbpCvPnzXurSHhi8Jb3TS2Vc='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; font-src 'self' data:; connect-src 'self' https: http:; worker-src 'self'; manifest-src 'self'; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+
+CMD ["/usr/local/bin/railway-start.sh"]
