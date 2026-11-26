@@ -200,6 +200,33 @@ export async function openAvatarImage (file, deps = {}) {
 }
 
 /**
+ * Strip APP1/APP13/COM and non-ICC APP2 segments from a canvas-encoded JPEG so browsers like iOS
+ * Safari that emit minimal EXIF/XMP headers in canvas.toBlob() still produce metadata-free bytes.
+ */
+function stripJpegMetadata (bytes) {
+  const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return b
+  const chunks = [b.subarray(0, 2)]
+  let i = 2
+  while (i + 4 <= b.length) {
+    if (b[i] !== 0xff) { chunks.push(b.subarray(i)); break }
+    const mk = b[i + 1]
+    if (mk === 0xda || mk === 0xd9) { chunks.push(b.subarray(i)); break }
+    const segLen = (b[i + 2] << 8) | b[i + 3]
+    const next = i + 2 + segLen
+    if (next > b.length) { chunks.push(b.subarray(i)); break }
+    const drop = mk === 0xe1 || mk === 0xed || mk === 0xfe || (mk === 0xe2 && ascii(b, i + 4, 11) !== 'ICC_PROFILE')
+    if (!drop) chunks.push(b.subarray(i, next))
+    i = next
+  }
+  const total = chunks.reduce((n, c) => n + c.length, 0)
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const c of chunks) { out.set(c, off); off += c.length }
+  return out
+}
+
+/**
  * The crop drawn into the AVATAR_EDGE square and encoded under AVATAR_MAX_BYTES:
  * { blob, media } with media a MediaRef ready for setAvatarPhoto. Quality steps down, then the
  * edge, before it gives up ('too-large'). Refuses bytes that carry metadata ('unreadable').
@@ -218,7 +245,8 @@ export async function renderAvatar (pic, view, crop, deps = {}) {
     for (const [edge, q] of [[256, 0.82], [256, 0.7], [256, 0.55], [192, 0.6], [192, 0.45]]) {
       const out = await d.encodeImage(square, edge, q, d)
       if (out.blob.size > AVATAR_MAX_BYTES) continue
-      const bytes = new Uint8Array(await out.blob.arrayBuffer())
+      const raw = new Uint8Array(await out.blob.arrayBuffer())
+      const bytes = out.mime === 'image/jpeg' && hasImageMetadata(raw) ? stripJpegMetadata(raw) : raw
       if (hasImageMetadata(bytes)) throw new MediaError('unreadable')
       const hash = await sha256Hex(bytes)
       const media = normalizeMediaRef({ kind: 'image', hash, mime: out.mime, size: bytes.length, width: out.width, height: out.height, at: Date.now() })
